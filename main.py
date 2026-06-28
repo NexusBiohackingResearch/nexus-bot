@@ -1,14 +1,31 @@
 import os
 import re
 import asyncio
+import json
+from datetime import datetime
 import pandas as pd
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
+import gspread
+from google.oauth2.service_account import Credentials
 
 FRAIS_PORT = 12.00
 SEUIL_GRATUIT = 150.00
 PRODUCTS_FILE = "produits.xlsx"
 CODES_FILE = "codes_promo.xlsx"
+CREDENTIALS_FILE = "credentials.json"
+SPREADSHEET_ID = "1pGnRnnQEmpnuwJiB6mkbFHaEmhh4wPFhCd4wtehAmKc"
+SHEET_NAME = "Commande NEXUS"
+
+def get_sheet():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+    return sheet
 
 def load_products():
     try:
@@ -81,7 +98,7 @@ def parse_order(message_text):
             separator_idx = i
             break
     if separator_idx is None:
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, None
 
     product_lines = [l for l in lines[:separator_idx] if l.strip()]
     info_lines = [l for l in lines[separator_idx+1:] if l.strip()]
@@ -109,7 +126,44 @@ def parse_order(message_text):
         else:
             not_found.append(name)
 
-    return found_products, not_found, unavailable, info_lines, total, promo_code
+    # Parse client info - ordre: nom prenom, adresse, code postal, ville, pays, tel, email
+    client = {
+        'nom_prenom': info_lines[0] if len(info_lines) > 0 else '',
+        'adresse': info_lines[1] if len(info_lines) > 1 else '',
+        'code_postal': info_lines[2] if len(info_lines) > 2 else '',
+        'ville': info_lines[3] if len(info_lines) > 3 else '',
+        'pays': info_lines[4] if len(info_lines) > 4 else '',
+        'telephone': info_lines[5] if len(info_lines) > 5 else '',
+        'email': info_lines[6] if len(info_lines) > 6 else '',
+    }
+
+    return found_products, not_found, unavailable, client, total, promo_code
+
+def add_to_sheet(found_products, client, total, promo_code, reduction_montant, total_final):
+    try:
+        sheet = get_sheet()
+        produits_str = ", ".join([f"{qty}x {p.upper()}" if qty > 1 else p.upper() for qty, p, _, _ in found_products])
+        date_heure = datetime.now().strftime("%d/%m/%Y %H:%M")
+        row = [
+            date_heure,
+            produits_str,
+            client['nom_prenom'],
+            client['adresse'],
+            client['code_postal'],
+            client['ville'],
+            client['pays'],
+            client['telephone'],
+            client['email'],
+            f"{total:.2f}",
+            promo_code if promo_code else '',
+            f"{reduction_montant:.2f}" if reduction_montant > 0 else '',
+            f"{total_final:.2f}",
+            "En attente"
+        ]
+        sheet.append_row(row)
+        print("Commande ajoutee dans Google Sheets")
+    except Exception as e:
+        print(f"Erreur Google Sheets: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -125,12 +179,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Format non reconnu.\n\n"
             "Merci d'envoyer votre commande dans ce format :\n\n"
             "Produit 1\nProduit 2\n\n"
-            "Nom Prenom\nAdresse\nCode postal\nVille\nPays\nTelephone\nEmail\n"
-            "CODE: VOTRE_CODE (optionnel)"
+            "Nom Prenom\nAdresse\nCode postal\nVille\nPays\nTelephone\nEmail"
         )
         return
 
-    found_products, not_found, unavailable, client_info, total, promo_code = result
+    found_products, not_found, unavailable, client, total, promo_code = result
 
     if unavailable:
         msg = "Certains produits ne sont pas disponibles :\n"
@@ -162,6 +215,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     frais = 0.00 if total_apres >= SEUIL_GRATUIT else FRAIS_PORT
     total_final = total_apres + frais
 
+    # Ajouter dans Google Sheets
+    add_to_sheet(found_products, client, total, promo_code, reduction_montant, total_final)
+
     recap = "CONFIRMATION DE COMMANDE\n"
     recap += "--------------------\n\n"
     recap += "Vos produits :\n"
@@ -186,13 +242,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         recap += f"Frais de port : {frais:.2f}EUR\n"
     recap += f"TOTAL : {total_final:.2f}EUR\n"
     recap += f"--------------------\n\n"
-
-    if client_info:
-        recap += "Adresse de livraison :\n"
-        for line in client_info:
-            recap += f"{line}\n"
-        recap += "\n"
-
+    recap += f"Adresse de livraison :\n"
+    recap += f"{client['nom_prenom']}\n"
+    recap += f"{client['adresse']}\n"
+    recap += f"{client['code_postal']} {client['ville']}\n"
+    recap += f"{client['pays']}\n\n"
     recap += "Paiement en Bitcoin :\n"
     recap += "3KNT1ksKmqoYySEHULRuD6hcAa8e67DjYH\n\n"
     recap += "Merci de votre commande !"
