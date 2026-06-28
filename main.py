@@ -30,7 +30,7 @@ def get_sheet():
 
 def load_products():
     try:
-        df = pd.read_excel(PRODUCTS_FILE)
+        df = pd.read_excel(PRODUCTS_FILE, header=1)
         products = {}
         for _, row in df.iterrows():
             name = str(row['Produit']).strip().lower()
