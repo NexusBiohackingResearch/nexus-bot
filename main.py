@@ -5,50 +5,24 @@ import pandas as pd
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
-PRODUCTS = {
-    "hgh 10u": 40.00,
-    "bac water 10ml": 10.00,
-    "hmg 76": 50.00,
-    "hcg 5000": 55.00,
-    "retatrutide 10mg": 100.00,
-    "retatrutide 20mg": 150.00,
-    "bpc157 5mg": 30.00,
-    "bpc157 10mg": 50.00,
-    "tb500 10mg": 70.00,
-    "bpc-157+tb-500 5mg+5mg": 70.00,
-    "bpc-157+tb-500 10mg+10mg": 140.00,
-    "ghk-cu 50mg": 35.00,
-    "glow-70 70mg": 96.00,
-    "mgf 2mg": 45.00,
-    "peg mgf 2mg": 23.00,
-    "epithalon 10mg": 35.00,
-    "tesamorelin 12mg+ipamorelin 6mg": 180.00,
-    "semax 10mg+selank 10mg": 70.00,
-    "cjc-1295 w/o dac + ipamorelin 5mg+5mg": 60.00,
-    "nad+ 1000mg": 100.00,
-    "ghrp-2 2mg": 21.00,
-    "ghrp-6 5mg": 21.00,
-    "igf-lr3 1mg": 149.00,
-    "mots-c 10mg": 47.00,
-    "dsip 10mg": 50.00,
-    "oxytocin 5mg": 35.00,
-    "aod-9604 5mg": 50.00,
-    "pt141 10mg": 50.00,
-    "mt-i 10mg": 38.00,
-    "mt-ii (melanotan 2 acetate) 10mg": 40.00,
-    "kisspeptin 5mg": 40.00,
-    "ss-31 10mg": 70.00,
-    "kpv": 47.00,
-    "glutathione": 55.00,
-    "5-amino-1mq 5mg": 45.00,
-    "bronchogen 20mg": 80.00,
-    "livagen 20mg": 80.00,
-    "pancragen 20mg": 80.00,
-}
-
 FRAIS_PORT = 12.00
 SEUIL_GRATUIT = 150.00
+PRODUCTS_FILE = "produits.xlsx"
 CODES_FILE = "codes_promo.xlsx"
+
+def load_products():
+    try:
+        df = pd.read_excel(PRODUCTS_FILE)
+        products = {}
+        for _, row in df.iterrows():
+            name = str(row['Produit']).strip().lower()
+            price = float(row['Prix (EUR)'])
+            dispo = str(row['Disponible (Oui/Non)']).strip().lower() in ['oui', 'yes', 'true', '1']
+            products[name] = {'price': price, 'available': dispo}
+        return products
+    except Exception as e:
+        print(f"Erreur chargement produits: {e}")
+        return {}
 
 def load_promo_codes():
     try:
@@ -67,16 +41,16 @@ def load_promo_codes():
         print(f"Erreur codes promo: {e}")
         return {}
 
-def find_product(text):
+def find_product(text, products):
     text_lower = text.lower().strip()
-    if text_lower in PRODUCTS:
-        return text_lower, PRODUCTS[text_lower]
-    for product, price in PRODUCTS.items():
-        words = product.split()
+    if text_lower in products:
+        return text_lower, products[text_lower]
+    for name, data in products.items():
+        words = name.split()
         if all(w in text_lower for w in words[:2]):
-            return product, price
-        if text_lower in product or product.split()[0] in text_lower:
-            return product, price
+            return name, data
+        if text_lower in name or name.split()[0] in text_lower:
+            return name, data
     return None, None
 
 def parse_quantity(line):
@@ -107,7 +81,7 @@ def parse_order(message_text):
             separator_idx = i
             break
     if separator_idx is None:
-        return None, None, None, None, None
+        return None, None, None, None, None, None
 
     product_lines = [l for l in lines[:separator_idx] if l.strip()]
     info_lines = [l for l in lines[separator_idx+1:] if l.strip()]
@@ -116,21 +90,26 @@ def parse_order(message_text):
     if not promo_code:
         promo_code, product_lines = extract_promo_code(product_lines)
 
+    products = load_products()
     found_products = []
     not_found = []
+    unavailable = []
     total = 0.0
 
     for line in product_lines:
         qty, name = parse_quantity(line)
-        product, price = find_product(name)
-        if product:
-            subtotal = price * qty
-            total += subtotal
-            found_products.append((qty, product, price, subtotal))
+        product_name, data = find_product(name, products)
+        if product_name:
+            if data['available']:
+                subtotal = data['price'] * qty
+                total += subtotal
+                found_products.append((qty, product_name, data['price'], subtotal))
+            else:
+                unavailable.append(product_name)
         else:
             not_found.append(name)
 
-    return found_products, not_found, info_lines, total, promo_code
+    return found_products, not_found, unavailable, info_lines, total, promo_code
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -151,7 +130,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    found_products, not_found, client_info, total, promo_code = result
+    found_products, not_found, unavailable, client_info, total, promo_code = result
+
+    if unavailable:
+        msg = "Certains produits ne sont pas disponibles :\n"
+        for p in unavailable:
+            msg += f"- {p.upper()}\n"
+        msg += "\nMerci de modifier votre commande."
+        await message.reply_text(msg)
+        return
 
     if not found_products:
         await message.reply_text(
@@ -206,7 +193,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             recap += f"{line}\n"
         recap += "\n"
 
-    recap += "Lien de paiement :\n[Votre lien de paiement ici]\n\n"
+    recap += "Paiement en Bitcoin :\n"
+    recap += "3KNT1ksKmqoYySEHULRuD6hcAa8e67DjYH\n\n"
     recap += "Merci de votre commande !"
 
     await message.reply_text(recap)
