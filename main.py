@@ -11,10 +11,51 @@ from google.oauth2.service_account import Credentials
 
 FRAIS_PORT = 12.00
 SEUIL_GRATUIT = 150.00
-PRODUCTS_FILE = "produits.xlsx"
 CODES_FILE = "codes_promo.xlsx"
 SPREADSHEET_ID = "1pGnRnnQEmpnuwJiB6mkbFHaEmhh4wPFhCd4wtehAmKc"
 SHEET_NAME = "Commande NEXUS"
+
+# Produits directement dans le code - prix et disponibilité
+PRODUCTS = {
+    "hgh 10u": {"price": 40.00, "available": True},
+    "bac water 10ml": {"price": 10.00, "available": True},
+    "hmg 76": {"price": 50.00, "available": True},
+    "hcg 5000": {"price": 55.00, "available": True},
+    "retatrutide 10mg": {"price": 100.00, "available": True},
+    "retatrutide 20mg": {"price": 150.00, "available": True},
+    "bpc157 5mg": {"price": 30.00, "available": True},
+    "bpc157 10mg": {"price": 50.00, "available": True},
+    "tb500 10mg": {"price": 70.00, "available": True},
+    "bpc-157+tb-500 5mg+5mg": {"price": 70.00, "available": True},
+    "bpc-157+tb-500 10mg+10mg": {"price": 140.00, "available": True},
+    "ghk-cu 50mg": {"price": 35.00, "available": True},
+    "glow-70 70mg": {"price": 96.00, "available": True},
+    "mgf 2mg": {"price": 45.00, "available": True},
+    "peg mgf 2mg": {"price": 23.00, "available": True},
+    "epithalon 10mg": {"price": 35.00, "available": True},
+    "tesamorelin 12mg+ipamorelin 6mg": {"price": 180.00, "available": True},
+    "semax 10mg+selank 10mg": {"price": 70.00, "available": True},
+    "cjc-1295 w/o dac + ipamorelin 5mg+5mg": {"price": 60.00, "available": True},
+    "nad+ 1000mg": {"price": 100.00, "available": True},
+    "ghrp-2 2mg": {"price": 21.00, "available": True},
+    "ghrp-6 5mg": {"price": 21.00, "available": True},
+    "igf-lr3 1mg": {"price": 149.00, "available": True},
+    "mots-c 10mg": {"price": 47.00, "available": True},
+    "dsip 10mg": {"price": 50.00, "available": True},
+    "oxytocin 5mg": {"price": 35.00, "available": True},
+    "aod-9604 5mg": {"price": 50.00, "available": True},
+    "pt141 10mg": {"price": 50.00, "available": True},
+    "mt-i 10mg": {"price": 38.00, "available": True},
+    "mt-ii (melanotan 2 acetate) 10mg": {"price": 40.00, "available": True},
+    "kisspeptin 5mg": {"price": 40.00, "available": True},
+    "ss-31 10mg": {"price": 70.00, "available": True},
+    "kpv": {"price": 47.00, "available": True},
+    "glutathione": {"price": 55.00, "available": True},
+    "5-amino-1mq 5mg": {"price": 45.00, "available": True},
+    "bronchogen 20mg": {"price": 80.00, "available": True},
+    "livagen 20mg": {"price": 80.00, "available": True},
+    "pancragen 20mg": {"price": 80.00, "available": True},
+}
 
 def get_sheet():
     scopes = [
@@ -28,30 +69,16 @@ def get_sheet():
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
     return sheet
 
-def load_products():
-    try:
-        df = pd.read_excel(PRODUCTS_FILE, header=1)
-        products = {}
-        for _, row in df.iterrows():
-            name = str(row['Produit']).strip().lower()
-            price = float(row['Prix (EUR)'])
-            dispo = str(row['Disponible (Oui/Non)']).strip().lower() in ['oui', 'yes', 'true', '1']
-            products[name] = {'price': price, 'available': dispo}
-        return products
-    except Exception as e:
-        print(f"Erreur chargement produits: {e}")
-        return {}
-
 def load_promo_codes():
     try:
-        df = pd.read_excel(CODES_FILE)
+        df = pd.read_excel(CODES_FILE, header=1)
         codes = {}
         for _, row in df.iterrows():
             code = str(row['Code']).strip().upper()
-            actif = str(row['Actif']).strip().lower() in ['oui', 'yes', 'true', '1']
+            actif = str(row['Actif (Oui/Non)']).strip().lower() in ['oui', 'yes', 'true', '1']
             if actif:
                 codes[code] = {
-                    'influenceur': str(row['Influenceur']).strip(),
+                    'influenceur': str(row['Influenceur / Description']).strip(),
                     'reduction': float(row['Reduction (%)']),
                 }
         return codes
@@ -59,11 +86,11 @@ def load_promo_codes():
         print(f"Erreur codes promo: {e}")
         return {}
 
-def find_product(text, products):
+def find_product(text):
     text_lower = text.lower().strip()
-    if text_lower in products:
-        return text_lower, products[text_lower]
-    for name, data in products.items():
+    if text_lower in PRODUCTS:
+        return text_lower, PRODUCTS[text_lower]
+    for name, data in PRODUCTS.items():
         words = name.split()
         if all(w in text_lower for w in words[:2]):
             return name, data
@@ -108,7 +135,6 @@ def parse_order(message_text):
     if not promo_code:
         promo_code, product_lines = extract_promo_code(product_lines)
 
-    products = load_products()
     found_products = []
     not_found = []
     unavailable = []
@@ -116,7 +142,7 @@ def parse_order(message_text):
 
     for line in product_lines:
         qty, name = parse_quantity(line)
-        product_name, data = find_product(name, products)
+        product_name, data = find_product(name)
         if product_name:
             if data['available']:
                 subtotal = data['price'] * qty
