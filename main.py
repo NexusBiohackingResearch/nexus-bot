@@ -1,10 +1,10 @@
 import os
 import re
+import asyncio
 import pandas as pd
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
-# ===== LISTE DES PRODUITS ET PRIX =====
 PRODUCTS = {
     "hgh 10u": 40.00,
     "bac water 10ml": 10.00,
@@ -51,7 +51,6 @@ SEUIL_GRATUIT = 150.00
 CODES_FILE = "codes_promo.xlsx"
 
 def load_promo_codes():
-    """Charge les codes promo depuis le fichier Excel."""
     try:
         df = pd.read_excel(CODES_FILE)
         codes = {}
@@ -61,15 +60,14 @@ def load_promo_codes():
             if actif:
                 codes[code] = {
                     'influenceur': str(row['Influenceur']).strip(),
-                    'reduction': float(row['Réduction (%)']),
+                    'reduction': float(row['Reduction (%)']),
                 }
         return codes
     except Exception as e:
-        print(f"Erreur lecture codes promo: {e}")
+        print(f"Erreur codes promo: {e}")
         return {}
 
 def find_product(text):
-    """Recherche un produit dans la liste par correspondance partielle."""
     text_lower = text.lower().strip()
     if text_lower in PRODUCTS:
         return text_lower, PRODUCTS[text_lower]
@@ -82,7 +80,6 @@ def find_product(text):
     return None, None
 
 def parse_quantity(line):
-    """Extrait la quantité et le nom du produit d'une ligne."""
     match = re.match(r'^(\d+)\s*[xX]?\s*(.+)$', line.strip())
     if match:
         return int(match.group(1)), match.group(2).strip()
@@ -92,7 +89,6 @@ def parse_quantity(line):
     return 1, line.strip()
 
 def extract_promo_code(lines):
-    """Cherche un code promo dans les lignes du message."""
     promo_code = None
     clean_lines = []
     for line in lines:
@@ -104,24 +100,19 @@ def extract_promo_code(lines):
     return promo_code, clean_lines
 
 def parse_order(message_text):
-    """Parse le message de commande et extrait les infos."""
     lines = message_text.strip().split('\n')
-
     separator_idx = None
     for i, line in enumerate(lines):
         if line.strip() == '':
             separator_idx = i
             break
-
     if separator_idx is None:
         return None, None, None, None, None
 
     product_lines = [l for l in lines[:separator_idx] if l.strip()]
     info_lines = [l for l in lines[separator_idx+1:] if l.strip()]
 
-    # Cherche code promo dans les infos client
     promo_code, info_lines = extract_promo_code(info_lines)
-    # Aussi dans les produits (au cas où)
     if not promo_code:
         promo_code, product_lines = extract_promo_code(product_lines)
 
@@ -145,27 +136,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message or not message.text:
         return
-
     text = message.text
     if text.startswith('/'):
         return
 
     result = parse_order(text)
-
     if result[0] is None:
         await message.reply_text(
-            "❌ Format non reconnu.\n\n"
+            "Format non reconnu.\n\n"
             "Merci d'envoyer votre commande dans ce format :\n\n"
-            "Produit 1\n"
-            "Produit 2\n"
-            "\n"
-            "Nom Prénom\n"
-            "Adresse\n"
-            "Code postal\n"
-            "Ville\n"
-            "Pays\n"
-            "Téléphone\n"
-            "Email\n"
+            "Produit 1\nProduit 2\n\n"
+            "Nom Prenom\nAdresse\nCode postal\nVille\nPays\nTelephone\nEmail\n"
             "CODE: VOTRE_CODE (optionnel)"
         )
         return
@@ -174,14 +155,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not found_products:
         await message.reply_text(
-            "❌ Aucun produit reconnu dans votre commande.\n"
-            f"Produits non trouvés : {', '.join(not_found)}\n\n"
-            "Merci de vérifier les noms des produits."
+            f"Aucun produit reconnu.\nProduits non trouves : {', '.join(not_found)}"
         )
         return
 
-    # Vérification code promo
-    reduction_pct = 0.0
     reduction_montant = 0.0
     promo_info = ""
     if promo_code:
@@ -190,69 +167,64 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reduction_pct = codes[promo_code]['reduction']
             reduction_montant = total * (reduction_pct / 100)
             influenceur = codes[promo_code]['influenceur']
-            promo_info = f"🎁 Code *{promo_code}* ({influenceur}) : -*{reduction_pct:.0f}%* (-{reduction_montant:.2f}€)\n"
+            promo_info = f"Code {promo_code} ({influenceur}) : -{reduction_pct:.0f}% (-{reduction_montant:.2f}EUR)\n"
         else:
-            promo_info = f"⚠️ Code *{promo_code}* invalide ou désactivé\n"
+            promo_info = f"Code {promo_code} invalide ou desactive\n"
 
-    total_apres_reduction = total - reduction_montant
-    frais = 0.00 if total_apres_reduction >= SEUIL_GRATUIT else FRAIS_PORT
-    total_final = total_apres_reduction + frais
+    total_apres = total - reduction_montant
+    frais = 0.00 if total_apres >= SEUIL_GRATUIT else FRAIS_PORT
+    total_final = total_apres + frais
 
-    # Construction du message
-    recap = "✅ *CONFIRMATION DE COMMANDE*\n"
-    recap += "━━━━━━━━━━━━━━━━━━━━\n\n"
-    recap += "🛒 *Vos produits :*\n"
-
+    recap = "CONFIRMATION DE COMMANDE\n"
+    recap += "--------------------\n\n"
+    recap += "Vos produits :\n"
     for qty, product, price, subtotal in found_products:
-        name_display = product.upper()
         if qty > 1:
-            recap += f"• {qty}x {name_display} — {price:.2f}€ x {qty} = *{subtotal:.2f}€*\n"
+            recap += f"- {qty}x {product.upper()} : {price:.2f}EUR x {qty} = {subtotal:.2f}EUR\n"
         else:
-            recap += f"• {name_display} — *{price:.2f}€*\n"
+            recap += f"- {product.upper()} : {price:.2f}EUR\n"
 
     if not_found:
-        recap += f"\n⚠️ Produits non reconnus : {', '.join(not_found)}\n"
+        recap += f"\nProduits non reconnus : {', '.join(not_found)}\n"
 
-    recap += f"\n━━━━━━━━━━━━━━━━━━━━\n"
-    recap += f"💰 Sous-total : *{total:.2f}€*\n"
-
+    recap += f"\n--------------------\n"
+    recap += f"Sous-total : {total:.2f}EUR\n"
     if promo_info:
         recap += promo_info
-
     if reduction_montant > 0:
-        recap += f"💰 Après réduction : *{total_apres_reduction:.2f}€*\n"
-
+        recap += f"Apres reduction : {total_apres:.2f}EUR\n"
     if frais == 0:
-        recap += f"🚚 Frais de port : *GRATUIT* (commande > {SEUIL_GRATUIT:.0f}€)\n"
+        recap += f"Frais de port : GRATUIT\n"
     else:
-        recap += f"🚚 Frais de port : *{frais:.2f}€*\n"
-
-    recap += f"💳 *TOTAL : {total_final:.2f}€*\n"
-    recap += f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        recap += f"Frais de port : {frais:.2f}EUR\n"
+    recap += f"TOTAL : {total_final:.2f}EUR\n"
+    recap += f"--------------------\n\n"
 
     if client_info:
-        recap += "📦 *Adresse de livraison :*\n"
+        recap += "Adresse de livraison :\n"
         for line in client_info:
             recap += f"{line}\n"
         recap += "\n"
 
-    recap += "🔗 *Lien de paiement :*\n"
-    recap += "[Votre lien de paiement ici]\n\n"
-    recap += "_Merci de votre commande ! 🙏_"
+    recap += "Lien de paiement :\n[Votre lien de paiement ici]\n\n"
+    recap += "Merci de votre commande !"
 
-    await message.reply_text(recap, parse_mode='Markdown')
+    await message.reply_text(recap)
 
-def main():
+async def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
-        print("❌ TELEGRAM_BOT_TOKEN manquant !")
+        print("TELEGRAM_BOT_TOKEN manquant !")
         return
 
     app = Application.builder().token(token).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ Bot Nexus démarré !")
-    app.run_polling()
+    print("Bot Nexus demarre !")
+    async with app:
+        await app.start()
+        await app.updater.start_polling()
+        await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
