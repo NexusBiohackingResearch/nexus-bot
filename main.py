@@ -15,7 +15,6 @@ CODES_FILE = "codes_promo.xlsx"
 SPREADSHEET_ID = "1pGnRnnQEmpnuwJiB6mkbFHaEmhh4wPFhCd4wtehAmKc"
 SHEET_NAME = "Commande NEXUS"
 
-# Produits directement dans le code - prix et disponibilité
 PRODUCTS = {
     "hgh 10u": {"price": 40.00, "available": True},
     "bac water 10ml": {"price": 10.00, "available": True},
@@ -58,28 +57,32 @@ PRODUCTS = {
 }
 
 def get_sheet():
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
-    creds_dict = json.loads(creds_json)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
-    return sheet
+    try:
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds_json = os.environ.get("GOOGLE_CREDENTIALS")
+        creds_dict = json.loads(creds_json)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+        return sheet
+    except Exception as e:
+        print(f"Erreur Google Sheets: {e}")
+        return None
 
 def load_promo_codes():
     try:
         df = pd.read_excel(CODES_FILE, header=1)
         codes = {}
         for _, row in df.iterrows():
-            code = str(row['Code']).strip().upper()
-            actif = str(row['Actif (Oui/Non)']).strip().lower() in ['oui', 'yes', 'true', '1']
+            code = str(row.iloc[0]).strip().upper()
+            actif = str(row.iloc[3]).strip().lower() in ['oui', 'yes', 'true', '1']
             if actif:
                 codes[code] = {
-                    'influenceur': str(row['Influenceur / Description']).strip(),
-                    'reduction': float(row['Reduction (%)']),
+                    'influenceur': str(row.iloc[1]).strip(),
+                    'reduction': float(row.iloc[2]),
                 }
         return codes
     except Exception as e:
@@ -166,30 +169,23 @@ def parse_order(message_text):
     return found_products, not_found, unavailable, client, total, promo_code
 
 def add_to_sheet(found_products, client, total, promo_code, reduction_montant, total_final):
+    sheet = get_sheet()
+    if not sheet:
+        return
     try:
-        sheet = get_sheet()
         produits_str = ", ".join([f"{qty}x {p.upper()}" if qty > 1 else p.upper() for qty, p, _, _ in found_products])
         date_heure = datetime.now().strftime("%d/%m/%Y %H:%M")
         row = [
-            date_heure,
-            produits_str,
-            client['nom_prenom'],
-            client['adresse'],
-            client['code_postal'],
-            client['ville'],
-            client['pays'],
-            client['telephone'],
-            client['email'],
-            f"{total:.2f}",
-            promo_code if promo_code else '',
-            f"{reduction_montant:.2f}" if reduction_montant > 0 else '',
-            f"{total_final:.2f}",
-            "En attente"
+            date_heure, produits_str, client['nom_prenom'], client['adresse'],
+            client['code_postal'], client['ville'], client['pays'],
+            client['telephone'], client['email'], f"{total:.2f}",
+            promo_code if promo_code else '', f"{reduction_montant:.2f}" if reduction_montant > 0 else '',
+            f"{total_final:.2f}", "En attente"
         ]
         sheet.append_row(row)
         print("Commande ajoutee dans Google Sheets")
     except Exception as e:
-        print(f"Erreur Google Sheets: {e}")
+        print(f"Erreur ajout Google Sheets: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -220,9 +216,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not found_products:
-        await message.reply_text(
-            f"Aucun produit reconnu.\nProduits non trouves : {', '.join(not_found)}"
-        )
+        await message.reply_text(f"Aucun produit reconnu.\nProduits non trouves : {', '.join(not_found)}")
         return
 
     reduction_montant = 0.0
@@ -243,8 +237,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     add_to_sheet(found_products, client, total, promo_code, reduction_montant, total_final)
 
-    recap = "CONFIRMATION DE COMMANDE\n"
-    recap += "--------------------\n\n"
+    recap = "CONFIRMATION DE COMMANDE\n--------------------\n\n"
     recap += "Vos produits :\n"
     for qty, product, price, subtotal in found_products:
         if qty > 1:
@@ -261,20 +254,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         recap += promo_info
     if reduction_montant > 0:
         recap += f"Apres reduction : {total_apres:.2f}EUR\n"
-    if frais == 0:
-        recap += f"Frais de port : GRATUIT\n"
-    else:
-        recap += f"Frais de port : {frais:.2f}EUR\n"
+    recap += f"Frais de port : {'GRATUIT' if frais == 0 else f'{frais:.2f}EUR'}\n"
     recap += f"TOTAL : {total_final:.2f}EUR\n"
     recap += f"--------------------\n\n"
-    recap += f"Adresse de livraison :\n"
-    recap += f"{client['nom_prenom']}\n"
-    recap += f"{client['adresse']}\n"
-    recap += f"{client['code_postal']} {client['ville']}\n"
-    recap += f"{client['pays']}\n\n"
-    recap += "Paiement en Bitcoin :\n"
-    recap += "3KNT1ksKmqoYySEHULRuD6hcAa8e67DjYH\n\n"
-    recap += "Merci de votre commande !"
+    recap += f"Adresse de livraison :\n{client['nom_prenom']}\n{client['adresse']}\n"
+    recap += f"{client['code_postal']} {client['ville']}\n{client['pays']}\n\n"
+    recap += "Paiement en Bitcoin :\n3KNT1ksKmqoYySEHULRuD6hcAa8e67DjYH\n\nMerci de votre commande !"
 
     await message.reply_text(recap)
 
@@ -284,14 +269,20 @@ async def main():
         print("TELEGRAM_BOT_TOKEN manquant !")
         return
 
-    app = Application.builder().token(token).build()
+    print("Bot Nexus demarre !")
+    app = (
+        Application.builder()
+        .token(token)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .build()
+    )
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("Bot Nexus demarre !")
-    async with app:
-        await app.start()
-        await app.updater.start_polling()
-        await asyncio.Event().wait()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=True, allowed_updates=["message"])
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
