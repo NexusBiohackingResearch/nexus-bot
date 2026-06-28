@@ -13,7 +13,6 @@ FRAIS_PORT = 12.00
 SEUIL_GRATUIT = 150.00
 PRODUCTS_FILE = "produits.xlsx"
 CODES_FILE = "codes_promo.xlsx"
-CREDENTIALS_FILE = "credentials.json"
 SPREADSHEET_ID = "1pGnRnnQEmpnuwJiB6mkbFHaEmhh4wPFhCd4wtehAmKc"
 SHEET_NAME = "Commande NEXUS"
 
@@ -22,7 +21,9 @@ def get_sheet():
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
-    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
+    creds_dict = json.loads(creds_json)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
     return sheet
@@ -98,7 +99,7 @@ def parse_order(message_text):
             separator_idx = i
             break
     if separator_idx is None:
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None
 
     product_lines = [l for l in lines[:separator_idx] if l.strip()]
     info_lines = [l for l in lines[separator_idx+1:] if l.strip()]
@@ -126,7 +127,6 @@ def parse_order(message_text):
         else:
             not_found.append(name)
 
-    # Parse client info - ordre: nom prenom, adresse, code postal, ville, pays, tel, email
     client = {
         'nom_prenom': info_lines[0] if len(info_lines) > 0 else '',
         'adresse': info_lines[1] if len(info_lines) > 1 else '',
@@ -215,7 +215,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     frais = 0.00 if total_apres >= SEUIL_GRATUIT else FRAIS_PORT
     total_final = total_apres + frais
 
-    # Ajouter dans Google Sheets
     add_to_sheet(found_products, client, total, promo_code, reduction_montant, total_final)
 
     recap = "CONFIRMATION DE COMMANDE\n"
