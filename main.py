@@ -2,18 +2,24 @@ import os
 import re
 import asyncio
 import json
+import html
+import uuid
 from datetime import datetime
 import pandas as pd
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import gspread
 from google.oauth2.service_account import Credentials
+from aiohttp import web, ClientSession, ClientTimeout
 
 FRAIS_PORT = 12.00
 SEUIL_GRATUIT = 150.00
 CODES_FILE = "codes_promo.xlsx"
 SPREADSHEET_ID = "1pGnRnnQEmpnuwJiB6mkbFHaEmhh4wPFhCd4wtehAmKc"
 SHEET_NAME = "Commande NEXUS"
+BITCOIN_ADDRESS = os.environ.get("BITCOIN_ADDRESS", "3KNT1ksKmqoYySEHULRuD6hcAa8e67DjYH")
+BTC_RATE_CACHE_SECONDS = 300
+_btc_rate_cache = {"rate": None, "timestamp": 0.0}
 
 PRODUCTS = {
     "hgh 10u": {"price": 40.00, "available": True},
@@ -55,6 +61,109 @@ PRODUCTS = {
     "livagen 20mg": {"price": 80.00, "available": True},
     "pancragen 20mg": {"price": 80.00, "available": True},
 }
+
+
+def get_public_base_url():
+    explicit = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if railway_domain:
+        return f"https://{railway_domain}"
+    return None
+
+
+async def get_btc_eur_rate():
+    now = asyncio.get_running_loop().time()
+    cached_rate = _btc_rate_cache["rate"]
+    if cached_rate and now - _btc_rate_cache["timestamp"] < BTC_RATE_CACHE_SECONDS:
+        return cached_rate
+
+    url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=eur"
+    timeout = ClientTimeout(total=10)
+    async with ClientSession(timeout=timeout) as session:
+        async with session.get(url, headers={"accept": "application/json"}) as response:
+            response.raise_for_status()
+            data = await response.json()
+            rate = float(data["bitcoin"]["eur"])
+
+    _btc_rate_cache["rate"] = rate
+    _btc_rate_cache["timestamp"] = now
+    return rate
+
+
+def build_payment_link(order_id, btc_amount):
+    base_url = get_public_base_url()
+    if not base_url:
+        return None
+    return f"{base_url}/pay?order_id={order_id}&amount={btc_amount:.8f}"
+
+
+async def payment_page(request):
+    order_id = request.query.get("order_id", "Commande NEXUS")
+    amount_raw = request.query.get("amount", "")
+    try:
+        amount = float(amount_raw)
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        raise web.HTTPBadRequest(text="Montant Bitcoin invalide")
+
+    bitcoin_uri = (
+        f"bitcoin:{BITCOIN_ADDRESS}?amount={amount:.8f}"
+        f"&label=NEXUS&message={order_id}"
+    )
+    safe_order = html.escape(order_id)
+    safe_address = html.escape(BITCOIN_ADDRESS)
+    safe_uri = html.escape(bitcoin_uri, quote=True)
+    page = f"""<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Paiement Bitcoin NEXUS</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; background:#f5f5f5; margin:0; padding:24px; }}
+    .card {{ max-width:560px; margin:40px auto; background:white; border-radius:18px; padding:28px; box-shadow:0 10px 35px rgba(0,0,0,.10); }}
+    h1 {{ margin-top:0; }}
+    .amount {{ font-size:32px; font-weight:700; margin:18px 0; }}
+    .button {{ display:block; text-align:center; background:#f7931a; color:white; text-decoration:none; padding:16px; border-radius:12px; font-weight:700; font-size:18px; }}
+    .box {{ background:#f1f1f1; padding:14px; border-radius:10px; overflow-wrap:anywhere; margin-top:18px; }}
+    .muted {{ color:#666; font-size:14px; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Paiement Bitcoin</h1>
+    <p class="muted">Référence : {safe_order}</p>
+    <div class="amount">{amount:.8f} BTC</div>
+    <a class="button" href="{safe_uri}">Ouvrir mon portefeuille Bitcoin</a>
+    <div class="box"><strong>Adresse :</strong><br>{safe_address}</div>
+    <div class="box"><strong>Montant exact :</strong><br>{amount:.8f} BTC</div>
+    <p class="muted">Vérifiez toujours l’adresse et le montant dans votre portefeuille avant de confirmer.</p>
+  </div>
+</body>
+</html>"""
+    return web.Response(text=page, content_type="text/html")
+
+
+async def healthcheck(request):
+    return web.json_response({"status": "ok"})
+
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", healthcheck)
+    app.router.add_get("/health", healthcheck)
+    app.router.add_get("/pay", payment_page)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", "8080"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"Serveur web demarre sur le port {port}")
+    return runner
+
 
 def get_sheet():
     try:
@@ -168,7 +277,7 @@ def parse_order(message_text):
 
     return found_products, not_found, unavailable, client, total, promo_code
 
-def add_to_sheet(found_products, client, total, promo_code, reduction_montant, total_final):
+def add_to_sheet(found_products, client, total, promo_code, reduction_montant, total_final, order_id, btc_amount, btc_rate, payment_link):
     sheet = get_sheet()
     if not sheet:
         return
@@ -180,7 +289,7 @@ def add_to_sheet(found_products, client, total, promo_code, reduction_montant, t
             client['code_postal'], client['ville'], client['pays'],
             client['telephone'], client['email'], f"{total:.2f}",
             promo_code if promo_code else '', f"{reduction_montant:.2f}" if reduction_montant > 0 else '',
-            f"{total_final:.2f}", "En attente"
+            f"{total_final:.2f}", "En attente", order_id, f"{btc_amount:.8f}", f"{btc_rate:.2f}", payment_link or ""
         ]
         sheet.append_row(row)
         print("Commande ajoutee dans Google Sheets")
@@ -235,7 +344,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     frais = 0.00 if total_apres >= SEUIL_GRATUIT else FRAIS_PORT
     total_final = total_apres + frais
 
-    add_to_sheet(found_products, client, total, promo_code, reduction_montant, total_final)
+    order_id = f"NEXUS-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
+    try:
+        btc_rate = await get_btc_eur_rate()
+        btc_amount = total_final / btc_rate
+    except Exception as e:
+        print(f"Erreur recuperation cours BTC/EUR: {e}")
+        await message.reply_text(
+            "Le cours Bitcoin est momentanement indisponible. Merci de reessayer dans quelques minutes."
+        )
+        return
+
+    payment_link = build_payment_link(order_id, btc_amount)
+    add_to_sheet(
+        found_products, client, total, promo_code, reduction_montant, total_final,
+        order_id, btc_amount, btc_rate, payment_link
+    )
 
     recap = "CONFIRMATION DE COMMANDE\n--------------------\n\n"
     recap += "Vos produits :\n"
@@ -259,9 +383,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     recap += f"--------------------\n\n"
     recap += f"Adresse de livraison :\n{client['nom_prenom']}\n{client['adresse']}\n"
     recap += f"{client['code_postal']} {client['ville']}\n{client['pays']}\n\n"
-    recap += "Paiement en Bitcoin :\n3KNT1ksKmqoYySEHULRuD6hcAa8e67DjYH\n\nMerci de votre commande !"
+    recap += f"Reference commande : {order_id}\n"
+    recap += f"Montant Bitcoin : {btc_amount:.8f} BTC\n"
+    recap += f"Cours utilise : 1 BTC = {btc_rate:.2f} EUR\n\n"
+    recap += f"Adresse Bitcoin :\n{BITCOIN_ADDRESS}\n\n"
+    recap += "Cliquez sur le bouton ci-dessous pour ouvrir la page de paiement.\n"
+    recap += "Le statut reste 'En attente' jusqu'a verification manuelle.\n\nMerci de votre commande !"
 
-    await message.reply_text(recap)
+    if payment_link:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("₿ Payer en Bitcoin", url=payment_link)
+        ]])
+        await message.reply_text(recap, reply_markup=keyboard)
+    else:
+        await message.reply_text(
+            recap + "\n\nBouton indisponible : ajoutez PUBLIC_BASE_URL dans Railway."
+        )
 
 async def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -270,6 +407,7 @@ async def main():
         return
 
     print("Bot Nexus demarre !")
+    web_runner = await start_web_server()
     app = (
         Application.builder()
         .token(token)
@@ -282,7 +420,10 @@ async def main():
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True, allowed_updates=["message"])
-    await asyncio.Event().wait()
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await web_runner.cleanup()
 
 if __name__ == "__main__":
     asyncio.run(main())
