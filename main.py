@@ -386,7 +386,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     recap += f"Reference commande : {order_id}\n"
     recap += f"Montant Bitcoin : {btc_amount:.8f} BTC\n"
     recap += f"Cours utilise : 1 BTC = {btc_rate:.2f} EUR\n\n"
-    recap += f"Adresse Bitcoin :\n{BITCOIN_ADDRESS}\n\n"
     recap += "Cliquez sur le bouton ci-dessous pour ouvrir la page de paiement.\n"
     recap += "Le statut reste 'En attente' jusqu'a verification manuelle.\n\nMerci de votre commande !"
 
