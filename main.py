@@ -726,18 +726,42 @@ def add_to_sheet(found_products, client, total, promo_code, reduction_montant, t
     sheet = get_sheet()
     if not sheet:
         return
+
     try:
-        produits_str = ", ".join([f"{qty}x {p.upper()}" if qty > 1 else p.upper() for qty, p, _, _ in found_products])
+        produits_str = ", ".join(
+            [
+                f"{qty}x {product.upper()}" if qty > 1 else product.upper()
+                for qty, product, _, _ in found_products
+            ]
+        )
         date_heure = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+        # Ordre fixe correspondant exactement aux colonnes A à S du Google Sheet.
         row = [
-            date_heure, produits_str, client['nom_prenom'], client['adresse'],
-            client['code_postal'], client['ville'], client['pays'],
-            client['telephone'], client['email'], f"{total:.2f}",
-            promo_code if promo_code else '', f"{reduction_montant:.2f}" if reduction_montant > 0 else '',
-            f"{total_final:.2f}", "En attente", order_id, f"{btc_amount:.8f}", f"{btc_rate:.2f}", payment_link or ""
+            order_id,                                                    # A - ID Commande
+            date_heure,                                                  # B - Date/Heure
+            produits_str,                                                # C - Produits
+            client["nom_prenom"],                                        # D - Nom & Prénom
+            client["adresse"],                                           # E - Adresse
+            client["code_postal"],                                       # F - Code Postal
+            client["ville"],                                             # G - Ville
+            client["pays"],                                              # H - Pays
+            client["telephone"],                                         # I - Téléphone
+            client["email"],                                             # J - Email
+            f"{btc_rate:.2f}",                                           # K - Cours BTC/EUR
+            f"{btc_amount:.8f}",                                         # L - Montant BTC
+            f"{total:.2f}",                                              # M - Sous-total
+            promo_code if promo_code else "",                            # N - Code Promo
+            f"{reduction_montant:.2f}" if reduction_montant > 0 else "", # O - Réduction
+            f"{total_final:.2f}",                                        # P - Total Final
+            "En attente",                                                # Q - Statut
+            payment_link or "",                                          # R - Lien de paiement
+            "",                                                          # S - Date de paiement
         ]
-        sheet.append_row(row)
-        print("Commande ajoutee dans Google Sheets")
+
+        sheet.append_row(row, value_input_option="USER_ENTERED")
+        print(f"Commande {order_id} ajoutee dans Google Sheets")
+
     except Exception as e:
         print(f"Erreur ajout Google Sheets: {e}")
 
