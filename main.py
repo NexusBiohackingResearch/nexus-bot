@@ -553,11 +553,11 @@ async def payment_page(request):
     return web.Response(
         text=page,
         content_type="text/html",
-        headers={{
+        headers={
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer",
-        }},
+        },
     )
 
 
