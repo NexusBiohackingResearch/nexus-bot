@@ -486,10 +486,15 @@ async def payment_page(request):
       </div>
       <p class="scan">Scannez ce QR code avec votre portefeuille Bitcoin.<br>Le montant et la référence sont déjà intégrés.</p>
 
-      <a class="primary" href="{safe_uri}" id="walletButton">
+      <a class="primary" href="{safe_uri}" id="walletButton" onclick="return openBitcoinWallet(event)">
         <span>⚡</span>
         <span>Ouvrir mon portefeuille Bitcoin</span>
       </a>
+
+      <div id="walletFallback" style="display:none; margin-top:14px; padding:14px; border-radius:14px; border:1px solid rgba(19,215,232,.24); background:rgba(8,18,28,.82); color:#c9d7e1; font-size:13px; line-height:1.55; text-align:center;">
+        Telegram semble bloquer l’ouverture automatique du portefeuille.<br>
+        Ouvrez cette page dans votre navigateur externe, ou utilisez les boutons de copie ci-dessous.
+      </div>
 
       <div class="or">Solution de secours</div>
 
@@ -542,11 +547,37 @@ async def payment_page(request):
       toastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
     }}
 
-    document.getElementById("walletButton").addEventListener("click", function () {{
-      const original = this.innerHTML;
-      this.innerHTML = "<span>⚡</span><span>Ouverture du portefeuille…</span>";
-      setTimeout(() => {{ this.innerHTML = original; }}, 2500);
-    }});
+    function openBitcoinWallet(event) {{
+      event.preventDefault();
+
+      const button = document.getElementById("walletButton");
+      const fallback = document.getElementById("walletFallback");
+      const original = button.innerHTML;
+      const bitcoinUri = "{safe_uri}";
+
+      button.innerHTML = "<span>⚡</span><span>Ouverture du portefeuille…</span>";
+
+      // Première tentative avec location.href.
+      window.location.href = bitcoinUri;
+
+      // Deuxième tentative discrète via un lien temporaire.
+      setTimeout(() => {{
+        const link = document.createElement("a");
+        link.href = bitcoinUri;
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }}, 250);
+
+      // Si le navigateur Telegram bloque le protocole bitcoin:, on affiche le secours.
+      setTimeout(() => {{
+        button.innerHTML = original;
+        fallback.style.display = "block";
+      }}, 1800);
+
+      return false;
+    }}
   </script>
 </body>
 </html>"""
